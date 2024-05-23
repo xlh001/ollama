@@ -106,7 +106,7 @@ type Layer map[string]*Tensor
 
 func (l Layer) size() (size uint64) {
 	for _, t := range l {
-		size += t.size()
+		size += t.Size()
 	}
 
 	return size
@@ -185,7 +185,7 @@ func (t Tensor) parameters() uint64 {
 	return count
 }
 
-func (t Tensor) size() uint64 {
+func (t Tensor) Size() uint64 {
 	return t.parameters() * t.typeSize() / t.blockSize()
 }
 
@@ -288,7 +288,7 @@ func (llm GGML) GraphSize(context, batch uint64) (partialOffload, fullOffload ui
 			// mixtral 8x22b
 			ff := uint64(llm.KV()["llama.feed_forward_length"].(uint32))
 			partialOffload = max(
-				3*ffnGateExpsWeight.size()+4*batch*(2*ff+headsKV+embedding+context+embedding/heads*headsKV),
+				3*ffnGateExpsWeight.Size()+4*batch*(2*ff+headsKV+embedding+context+embedding/heads*headsKV),
 				4*(context*batch*heads+context*embedding/heads*headsKV+batch*1024+embedding/heads*headsKV*batch),
 			)
 		} else if ffnGateWeight, ok := layers["blk.0"]["ffn_gate.0.weight"]; ok {
@@ -329,7 +329,10 @@ func (llm GGML) GraphSize(context, batch uint64) (partialOffload, fullOffload ui
 			4*batch*(1+4*embedding+context+context*heads),
 		)
 
-		partialOffload = 4*batch*(2*embedding+vocab) + embedding*vocab*105/128
+		partialOffload = max(
+			4*batch*(2*embedding+vocab)+embedding*vocab*105/128,
+			4*batch*(2+3*embedding+context+context*heads),
+		)
 	case "stablelm":
 		fullOffload = 4 * batch * (context*(1+heads) + 3*embedding + 2)
 		partialOffload = max(

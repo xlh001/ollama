@@ -197,14 +197,17 @@ type EmbeddingResponse struct {
 
 // CreateRequest is the request passed to [Client.Create].
 type CreateRequest struct {
-	Model        string `json:"model"`
-	Path         string `json:"path"`
-	Modelfile    string `json:"modelfile"`
-	Stream       *bool  `json:"stream,omitempty"`
-	Quantization string `json:"quantization,omitempty"`
+	Model     string `json:"model"`
+	Path      string `json:"path"`
+	Modelfile string `json:"modelfile"`
+	Stream    *bool  `json:"stream,omitempty"`
+	Quantize  string `json:"quantize,omitempty"`
 
 	// Name is deprecated, see Model
 	Name string `json:"name"`
+
+	// Quantization is deprecated, see Quantize
+	Quantization string `json:"quantization,omitempty"`
 }
 
 // DeleteRequest is the request passed to [Client.Delete].
@@ -286,10 +289,12 @@ type ListResponse struct {
 type ModelResponse struct {
 	Name       string       `json:"name"`
 	Model      string       `json:"model"`
-	ModifiedAt time.Time    `json:"modified_at"`
+	ModifiedAt time.Time    `json:"modified_at,omitempty"`
 	Size       int64        `json:"size"`
 	Digest     string       `json:"digest"`
 	Details    ModelDetails `json:"details,omitempty"`
+	ExpiresAt  time.Time    `json:"expires_at,omitempty"`
+	SizeVRAM   int64        `json:"size_vram,omitempty"`
 }
 
 type TokenResponse struct {
