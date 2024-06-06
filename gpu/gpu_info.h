@@ -27,15 +27,31 @@
 
 #endif
 
+#define LOG(verbose, ...) \
+  do { \
+    if (verbose) { \
+      fprintf(stderr, __VA_ARGS__); \
+    } \
+  } while (0)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#define GPU_ID_LEN 64
+#define GPU_NAME_LEN 96
+
 typedef struct mem_info {
+  char *err;  // If non-nill, caller responsible for freeing
+  char gpu_id[GPU_ID_LEN];
+  char gpu_name[GPU_NAME_LEN];
   uint64_t total;
   uint64_t free;
-  unsigned int count;
-  char *err;  // If non-nill, caller responsible for freeing
+
+  // Compute Capability
+  int major; 
+  int minor;
+  int patch;
 } mem_info_t;
 
 void cpu_check_ram(mem_info_t *resp);
@@ -44,8 +60,9 @@ void cpu_check_ram(mem_info_t *resp);
 }
 #endif
 
-#include "gpu_info_cuda.h"
-#include "gpu_info_rocm.h"
+#include "gpu_info_cudart.h"
+#include "gpu_info_nvcuda.h"
+#include "gpu_info_oneapi.h"
 
 #endif  // __GPU_INFO_H__
 #endif  // __APPLE__

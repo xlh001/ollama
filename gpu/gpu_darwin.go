@@ -2,53 +2,54 @@
 
 package gpu
 
+/*
+#cgo CFLAGS: -x objective-c
+#cgo LDFLAGS: -framework Foundation -framework CoreGraphics -framework Metal
+#include "gpu_info_darwin.h"
+*/
 import "C"
 import (
 	"runtime"
 
-	"github.com/pbnjay/memory"
+	"github.com/ollama/ollama/format"
 )
 
-// CheckVRAM returns the free VRAM in bytes on Linux machines with NVIDIA GPUs
-func CheckVRAM() (int64, error) {
+const (
+	metalMinimumMemory = 512 * format.MebiByte
+)
+
+func GetGPUInfo() GpuInfoList {
+	mem, _ := GetCPUMem()
 	if runtime.GOARCH == "amd64" {
-		// gpu not supported, this may not be metal
-		return 0, nil
-	}
-
-	// on macOS, there's already buffer for available vram (see below) so just return the total
-	systemMemory := int64(memory.TotalMemory())
-
-	// macOS limits how much memory is available to the GPU based on the amount of system memory
-	// TODO: handle case where iogpu.wired_limit_mb is set to a higher value
-	if systemMemory <= 36*1024*1024*1024 {
-		systemMemory = systemMemory * 2 / 3
-	} else {
-		systemMemory = systemMemory * 3 / 4
-	}
-
-	return systemMemory, nil
-}
-
-func GetGPUInfo() GpuInfo {
-	mem, _ := getCPUMem()
-	if runtime.GOARCH == "amd64" {
-		return GpuInfo{
-			Library: "default",
-			Variant: GetCPUVariant(),
-			memInfo: mem,
+		return []GpuInfo{
+			{
+				Library: "cpu",
+				Variant: GetCPUVariant(),
+				memInfo: mem,
+			},
 		}
 	}
-	return GpuInfo{
+	info := GpuInfo{
 		Library: "metal",
-		memInfo: mem,
+		ID:      "0",
 	}
+	info.TotalMemory = uint64(C.getRecommendedMaxVRAM())
+
+	// TODO is there a way to gather actual allocated video memory? (currentAllocatedSize doesn't work)
+	info.FreeMemory = info.TotalMemory
+
+	info.MinimumMemory = metalMinimumMemory
+	return []GpuInfo{info}
 }
 
-func getCPUMem() (memInfo, error) {
+func GetCPUMem() (memInfo, error) {
 	return memInfo{
-		TotalMemory: 0,
+		TotalMemory: uint64(C.getPhysicalMemory()),
 		FreeMemory:  0,
-		DeviceCount: 0,
 	}, nil
+}
+
+func (l GpuInfoList) GetVisibleDevicesEnv() (string, string) {
+	// No-op on darwin
+	return "", ""
 }

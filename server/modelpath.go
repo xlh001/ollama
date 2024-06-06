@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
+	"regexp"
 	"strings"
 )
 
@@ -26,9 +26,10 @@ const (
 )
 
 var (
-	ErrInvalidImageFormat = errors.New("invalid image format")
-	ErrInvalidProtocol    = errors.New("invalid protocol scheme")
-	ErrInsecureProtocol   = errors.New("insecure protocol http")
+	ErrInvalidImageFormat  = errors.New("invalid image format")
+	ErrInvalidProtocol     = errors.New("invalid protocol scheme")
+	ErrInsecureProtocol    = errors.New("insecure protocol http")
+	ErrInvalidDigestFormat = errors.New("invalid digest format")
 )
 
 func ParseModelPath(name string) ModelPath {
@@ -46,6 +47,7 @@ func ParseModelPath(name string) ModelPath {
 		name = after
 	}
 
+	name = strings.ReplaceAll(name, string(os.PathSeparator), "/")
 	parts := strings.Split(name, "/")
 	switch len(parts) {
 	case 3:
@@ -149,10 +151,15 @@ func GetBlobsPath(digest string) (string, error) {
 		return "", err
 	}
 
-	if runtime.GOOS == "windows" {
-		digest = strings.ReplaceAll(digest, ":", "-")
+	// only accept actual sha256 digests
+	pattern := "^sha256[:-][0-9a-fA-F]{64}$"
+	re := regexp.MustCompile(pattern)
+
+	if digest != "" && !re.MatchString(digest) {
+		return "", ErrInvalidDigestFormat
 	}
 
+	digest = strings.ReplaceAll(digest, ":", "-")
 	path := filepath.Join(dir, "blobs", digest)
 	dirPath := filepath.Dir(path)
 	if digest == "" {
