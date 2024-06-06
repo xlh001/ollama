@@ -251,6 +251,10 @@ func (n Name) DisplayShortest() string {
 	return sb.String()
 }
 
+func IsValidNamespace(namespace string) bool {
+	return isValidPart(kindNamespace, namespace)
+}
+
 // IsValid reports whether all parts of the name are present and valid. The
 // digest is a special case, and is checked for validity only if present.
 func (n Name) IsValid() bool {
@@ -291,11 +295,9 @@ func (n Name) Filepath() string {
 		panic("illegal attempt to get filepath of invalid name")
 	}
 	return filepath.Join(
-		strings.ToLower(filepath.Join(
-			n.Host,
-			n.Namespace,
-			n.Model,
-		)),
+		n.Host,
+		n.Namespace,
+		n.Model,
 		n.Tag,
 	)
 }
