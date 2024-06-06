@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,14 +24,13 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"golang.org/x/exp/slices"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/gpu"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/openai"
 	"github.com/ollama/ollama/parser"
-	"github.com/ollama/ollama/server/envconfig"
 	"github.com/ollama/ollama/types/errtypes"
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/version"
@@ -77,7 +77,6 @@ func isSupportedImageType(image []byte) bool {
 }
 
 func (s *Server) GenerateHandler(c *gin.Context) {
-
 	checkpointStart := time.Now()
 	var req api.GenerateRequest
 	err := c.ShouldBindJSON(&req)
@@ -315,10 +314,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 }
 
 func getDefaultSessionDuration() time.Duration {
-	if t, exists := os.LookupEnv("OLLAMA_KEEP_ALIVE"); exists {
-		v, err := strconv.Atoi(t)
+	if envconfig.KeepAlive != "" {
+		v, err := strconv.Atoi(envconfig.KeepAlive)
 		if err != nil {
-			d, err := time.ParseDuration(t)
+			d, err := time.ParseDuration(envconfig.KeepAlive)
 			if err != nil {
 				return defaultSessionDuration
 			}
@@ -421,13 +420,14 @@ func (s *Server) PullModelHandler(c *gin.Context) {
 		return
 	}
 
-	var model string
-	if req.Model != "" {
-		model = req.Model
-	} else if req.Name != "" {
-		model = req.Name
-	} else {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+	name := model.ParseName(cmp.Or(req.Model, req.Name))
+	if !name.IsValid() {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid model name"})
+		return
+	}
+
+	if err := checkNameExists(name); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -445,7 +445,7 @@ func (s *Server) PullModelHandler(c *gin.Context) {
 		ctx, cancel := context.WithCancel(c.Request.Context())
 		defer cancel()
 
-		if err := PullModel(ctx, model, regOpts, fn); err != nil {
+		if err := PullModel(ctx, name.DisplayShortest(), regOpts, fn); err != nil {
 			ch <- gin.H{"error": err.Error()}
 		}
 	}()
@@ -507,9 +507,24 @@ func (s *Server) PushModelHandler(c *gin.Context) {
 	streamResponse(c, ch)
 }
 
+func checkNameExists(name model.Name) error {
+	names, err := Manifests()
+	if err != nil {
+		return err
+	}
+
+	for n := range names {
+		if strings.EqualFold(n.Filepath(), name.Filepath()) && n != name {
+			return fmt.Errorf("a model with that name already exists")
+		}
+	}
+
+	return nil
+}
+
 func (s *Server) CreateModelHandler(c *gin.Context) {
-	var req api.CreateRequest
-	if err := c.ShouldBindJSON(&req); errors.Is(err, io.EOF) {
+	var r api.CreateRequest
+	if err := c.ShouldBindJSON(&r); errors.Is(err, io.EOF) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
 		return
 	} else if err != nil {
@@ -517,30 +532,35 @@ func (s *Server) CreateModelHandler(c *gin.Context) {
 		return
 	}
 
-	name := model.ParseName(cmp.Or(req.Model, req.Name))
+	name := model.ParseName(cmp.Or(r.Model, r.Name))
 	if !name.IsValid() {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errtypes.InvalidModelNameErrMsg})
 		return
 	}
 
-	if req.Path == "" && req.Modelfile == "" {
+	if err := checkNameExists(name); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if r.Path == "" && r.Modelfile == "" {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "path or modelfile are required"})
 		return
 	}
 
-	var r io.Reader = strings.NewReader(req.Modelfile)
-	if req.Path != "" && req.Modelfile == "" {
-		f, err := os.Open(req.Path)
+	var sr io.Reader = strings.NewReader(r.Modelfile)
+	if r.Path != "" && r.Modelfile == "" {
+		f, err := os.Open(r.Path)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("error reading modelfile: %s", err)})
 			return
 		}
 		defer f.Close()
 
-		r = f
+		sr = f
 	}
 
-	modelfile, err := parser.ParseFile(r)
+	f, err := parser.ParseFile(sr)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -556,17 +576,13 @@ func (s *Server) CreateModelHandler(c *gin.Context) {
 		ctx, cancel := context.WithCancel(c.Request.Context())
 		defer cancel()
 
-		quantization := req.Quantization
-		if req.Quantize != "" {
-			quantization = req.Quantize
-		}
-
-		if err := CreateModel(ctx, name.String(), filepath.Dir(req.Path), strings.ToUpper(quantization), modelfile, fn); err != nil {
+		quantization := cmp.Or(r.Quantize, r.Quantization)
+		if err := CreateModel(ctx, name, filepath.Dir(r.Path), strings.ToUpper(quantization), f, fn); err != nil {
 			ch <- gin.H{"error": err.Error()}
 		}
 	}()
 
-	if req.Stream != nil && !*req.Stream {
+	if r.Stream != nil && !*r.Stream {
 		waitForStream(c, ch)
 		return
 	}
@@ -575,48 +591,36 @@ func (s *Server) CreateModelHandler(c *gin.Context) {
 }
 
 func (s *Server) DeleteModelHandler(c *gin.Context) {
-	var req api.DeleteRequest
-	err := c.ShouldBindJSON(&req)
-	switch {
-	case errors.Is(err, io.EOF):
+	var r api.DeleteRequest
+	if err := c.ShouldBindJSON(&r); errors.Is(err, io.EOF) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
 		return
-	case err != nil:
+	} else if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	var model string
-	if req.Model != "" {
-		model = req.Model
-	} else if req.Name != "" {
-		model = req.Name
-	} else {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+	n := model.ParseName(cmp.Or(r.Model, r.Name))
+	if !n.IsValid() {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("name %q is invalid", cmp.Or(r.Model, r.Name))})
 		return
 	}
 
-	if err := DeleteModel(model); err != nil {
-		if os.IsNotExist(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", model)})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
-		return
-	}
-
-	manifestsPath, err := GetManifestPath()
+	m, err := ParseNamedManifest(n)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := PruneDirectory(manifestsPath); err != nil {
+	if err := m.Remove(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, nil)
+	if err := m.RemoveLayers(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 }
 
 func (s *Server) ShowModelHandler(c *gin.Context) {
@@ -720,72 +724,42 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 }
 
 func (s *Server) ListModelsHandler(c *gin.Context) {
-	manifests, err := GetManifestPath()
+	ms, err := Manifests()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	models := []api.ModelResponse{}
-	if err := filepath.Walk(manifests, func(path string, info os.FileInfo, _ error) error {
-		if !info.IsDir() {
-			rel, err := filepath.Rel(manifests, path)
-			if err != nil {
-				return err
-			}
+	for n, m := range ms {
+		f, err := m.Config.Open()
+		if err != nil {
+			slog.Warn("bad manifest filepath", "name", n, "error", err)
+			continue
+		}
+		defer f.Close()
 
-			if hidden, err := filepath.Match(".*", filepath.Base(rel)); err != nil {
-				return err
-			} else if hidden {
-				return nil
-			}
-
-			n := model.ParseNameFromFilepath(rel)
-			if !n.IsValid() {
-				slog.Warn("bad manifest filepath", "path", rel)
-				return nil
-			}
-
-			m, err := ParseNamedManifest(n)
-			if err != nil {
-				slog.Warn("bad manifest", "name", n, "error", err)
-				return nil
-			}
-
-			f, err := m.Config.Open()
-			if err != nil {
-				slog.Warn("bad manifest config filepath", "name", n, "error", err)
-				return nil
-			}
-			defer f.Close()
-
-			var c ConfigV2
-			if err := json.NewDecoder(f).Decode(&c); err != nil {
-				slog.Warn("bad manifest config", "name", n, "error", err)
-				return nil
-			}
-
-			// tag should never be masked
-			models = append(models, api.ModelResponse{
-				Model:      n.DisplayShortest(),
-				Name:       n.DisplayShortest(),
-				Size:       m.Size(),
-				Digest:     m.Digest,
-				ModifiedAt: info.ModTime(),
-				Details: api.ModelDetails{
-					Format:            c.ModelFormat,
-					Family:            c.ModelFamily,
-					Families:          c.ModelFamilies,
-					ParameterSize:     c.ModelType,
-					QuantizationLevel: c.FileType,
-				},
-			})
+		var cf ConfigV2
+		if err := json.NewDecoder(f).Decode(&cf); err != nil {
+			slog.Warn("bad manifest config", "name", n, "error", err)
+			continue
 		}
 
-		return nil
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		// tag should never be masked
+		models = append(models, api.ModelResponse{
+			Model:      n.DisplayShortest(),
+			Name:       n.DisplayShortest(),
+			Size:       m.Size(),
+			Digest:     m.digest,
+			ModifiedAt: m.fi.ModTime(),
+			Details: api.ModelDetails{
+				Format:            cf.ModelFormat,
+				Family:            cf.ModelFamily,
+				Families:          cf.ModelFamilies,
+				ParameterSize:     cf.ModelType,
+				QuantizationLevel: cf.FileType,
+			},
+		})
 	}
 
 	slices.SortStableFunc(models, func(i, j api.ModelResponse) int {
@@ -815,6 +789,11 @@ func (s *Server) CopyModelHandler(c *gin.Context) {
 	dst := model.ParseName(r.Destination)
 	if !dst.IsValid() {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("destination %q is invalid", r.Destination)})
+		return
+	}
+
+	if err := checkNameExists(dst); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -963,7 +942,7 @@ func allowedHostsMiddleware(addr net.Addr) gin.HandlerFunc {
 		}
 
 		if allowedHost(host) {
-			if c.Request.Method == "OPTIONS" {
+			if c.Request.Method == http.MethodOptions {
 				c.AbortWithStatus(http.StatusNoContent)
 				return
 			}
@@ -1025,7 +1004,7 @@ func Serve(ln net.Listener) error {
 		level = slog.LevelDebug
 	}
 
-	slog.Info("server config", "env", envconfig.AsMap())
+	slog.Info("server config", "env", envconfig.Values())
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     level,
 		AddSource: true,
@@ -1327,7 +1306,6 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		defer close(ch)
 
 		fn := func(r llm.CompletionResponse) {
-
 			resp := api.ChatResponse{
 				Model:      req.Model,
 				CreatedAt:  time.Now().UTC(),
