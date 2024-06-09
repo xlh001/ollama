@@ -730,7 +730,7 @@ func (s *Server) ListModelsHandler(c *gin.Context) {
 		return
 	}
 
-	models := []api.ModelResponse{}
+	models := []api.ListModelResponse{}
 	for n, m := range ms {
 		f, err := m.Config.Open()
 		if err != nil {
@@ -746,7 +746,7 @@ func (s *Server) ListModelsHandler(c *gin.Context) {
 		}
 
 		// tag should never be masked
-		models = append(models, api.ModelResponse{
+		models = append(models, api.ListModelResponse{
 			Model:      n.DisplayShortest(),
 			Name:       n.DisplayShortest(),
 			Size:       m.Size(),
@@ -762,7 +762,7 @@ func (s *Server) ListModelsHandler(c *gin.Context) {
 		})
 	}
 
-	slices.SortStableFunc(models, func(i, j api.ModelResponse) int {
+	slices.SortStableFunc(models, func(i, j api.ListModelResponse) int {
 		// most recently modified first
 		return cmp.Compare(j.ModifiedAt.Unix(), i.ModifiedAt.Unix())
 	})
@@ -960,6 +960,10 @@ func (s *Server) GenerateRoutes() http.Handler {
 	config.AllowWildcard = true
 	config.AllowBrowserExtensions = true
 	config.AllowHeaders = []string{"Authorization", "Content-Type", "User-Agent", "Accept", "X-Requested-With"}
+	openAIProperties := []string{"lang", "package-version", "os", "arch", "runtime", "runtime-version", "async"}
+	for _, prop := range openAIProperties {
+		config.AllowHeaders = append(config.AllowHeaders, "x-stainless-"+prop)
+	}
 	config.AllowOrigins = envconfig.AllowOrigins
 
 	r := gin.Default()
@@ -1139,7 +1143,7 @@ func streamResponse(c *gin.Context, ch chan any) {
 }
 
 func (s *Server) ProcessHandler(c *gin.Context) {
-	models := []api.ModelResponse{}
+	models := []api.ProcessModelResponse{}
 
 	for _, v := range s.sched.loaded {
 		model := v.model
@@ -1151,7 +1155,7 @@ func (s *Server) ProcessHandler(c *gin.Context) {
 			QuantizationLevel: model.Config.FileType,
 		}
 
-		mr := api.ModelResponse{
+		mr := api.ProcessModelResponse{
 			Model:     model.ShortName,
 			Name:      model.ShortName,
 			Size:      int64(v.estimatedTotal),
@@ -1171,7 +1175,7 @@ func (s *Server) ProcessHandler(c *gin.Context) {
 		models = append(models, mr)
 	}
 
-	c.JSON(http.StatusOK, api.ListResponse{Models: models})
+	c.JSON(http.StatusOK, api.ProcessResponse{Models: models})
 }
 
 // ChatPrompt builds up a prompt from a series of messages for the currently `loaded` model
